@@ -1,0 +1,100 @@
+# ---------------------------------------------------------------------------
+# Run the whole app with one command:
+#   docker compose up --build
+#
+#   Frontend -> http://localhost:5173   (nginx serving the React build)
+#   Backend  -> http://localhost:8000   (FastAPI, docs at /docs)
+#   Postgres -> localhost:5432          (user/password/db: todo/todo/todo)
+#   pgAdmin  -> http://localhost:5050   (database UI, already connected)
+#
+# Only the database (for running the backend locally with `uv run`):
+#   docker compose up -d db
+#
+# Postgres credentials can be overridden in a .env file NEXT TO this file:
+#   POSTGRES_USER=...  POSTGRES_PASSWORD=...  POSTGRES_DB=...
+# ---------------------------------------------------------------------------
+services:
+  db:
+    image: postgres:18-alpine
+    container_name: todo-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-todo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-todo}
+      POSTGRES_DB: ${POSTGRES_DB:-todo}
+    ports:
+      - "5432:5432"          # so tools on your machine (backend, psql, DBeaver) can connect
+    volumes:
+      # Named volume: data survives `docker compose down` and rebuilds.
+      # (Postgres 18+ images keep their data under /var/lib/postgresql)
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      # pg_isready = "is Postgres accepting connections yet?"
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    container_name: todo-backend
+    ports:
+      - "8000:8000"          # host:container
+    env_file:
+      - path: ./backend/.env # SECRET_KEY, ALLOWED_ORIGINS, ...
+        required: false      # falls back to defaults in config.py if missing
+    environment:
+      # Overrides DATABASE_URL from backend/.env: inside Docker the database
+      # host is the SERVICE NAME "db", not localhost.
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-todo}:${POSTGRES_PASSWORD:-todo}@db:5432/${POSTGRES_DB:-todo}
+    depends_on:
+      db:
+        condition: service_healthy  # don't start until Postgres is ready
+    restart: unless-stopped
+
+  # pgAdmin 4: web UI to browse tables, run SQL and see ER diagrams
+  #   http://localhost:5050   (no login - runs in "desktop mode")
+  pgadmin:
+    image: dpage/pgadmin4:9
+    container_name: todo-pgadmin
+    ports:
+      - "5050:80"
+    environment:
+      # Desktop mode = single user, no pgAdmin login page. Fine for local dev,
+      # NEVER expose this to a network.
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+      PGADMIN_DEFAULT_EMAIL: admin@example.com  # required by the image even in desktop mode
+      PGADMIN_DEFAULT_PASSWORD: admin
+      # libpq reads DB passwords from this file, so connecting needs no prompt
+      PGPASSFILE: /tmp/pgpass
+    volumes:
+      - ./pgadmin/servers.json:/pgadmin4/servers.json:ro  # pre-registers "Todo DB"
+      - ./pgadmin/pgpass:/pgpass:ro
+      - pgadmin-data:/var/lib/pgadmin                     # keeps pgAdmin settings
+    # libpq ignores a password file readable by others, and files mounted from
+    # Windows can't be chmod-ed - so copy it, lock it down, then start pgAdmin.
+    entrypoint: ["/bin/sh", "-c", "cp /pgpass /tmp/pgpass && chmod 600 /tmp/pgpass && exec /entrypoint.sh"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: http://localhost:8000/api
+    container_name: todo-frontend
+    ports:
+      # Host port 5173 so the browser origin is still http://localhost:5173,
+      # which is already in the backend's CORS ALLOWED_ORIGINS.
+      - "5173:80"
+    depends_on:
+      backend:
+        condition: service_healthy  # wait for the backend HEALTHCHECK
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  pgadmin-data:

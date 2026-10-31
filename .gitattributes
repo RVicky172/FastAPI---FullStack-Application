@@ -1,0 +1,3 @@
+# Store and check out text files with LF endings. Files like pgadmin/pgpass,
+# Dockerfiles and nginx.conf run inside Linux containers, where CRLF breaks them.
+* text=auto eol=lf

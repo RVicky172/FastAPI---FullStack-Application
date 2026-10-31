@@ -1,0 +1,978 @@
+{
+  "info": {
+    "_postman_id": "6f1c2a7e-4b3d-4c8e-9a51-2d7f0e9b1c33",
+    "name": "Todo API (FastAPI + JWT)",
+    "description": "End-to-end tests for the Todo API.\n\nRun the whole collection in order (Collection > Run). Requests pass data to each other through collection variables:\n\n- **Register** creates a fresh random user (so the collection can be re-run).\n- **Login** saves `access_token`.\n- The collection uses **Bearer {{access_token}}** auth, so every request inherits the token unless it overrides auth.\n- **Create todo** saves `todo_id` for the next requests.\n\nFolders:\n0. Health\n1. Auth: register, login, me, plus the error cases\n2. Todos: full CRUD + filters\n3. Security: missing, invalid or tampered tokens; one user can't touch another user's todos\n4. CORS: preflight from allowed and blocked origins\n\nA collection-level test also checks that the custom middleware headers (X-Request-ID, X-Process-Time) are on every response.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{access_token}}", "type": "string" }]
+  },
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Runs after EVERY request in the collection.",
+          "// Preflight (OPTIONS) is answered by CORSMiddleware, the outermost layer,",
+          "// so it never reaches our custom middleware - skip those.",
+          "if (pm.request.method !== 'OPTIONS') {",
+          "    pm.test('[middleware] X-Request-ID header present', () => {",
+          "        pm.response.to.have.header('X-Request-ID');",
+          "    });",
+          "    pm.test('[middleware] X-Process-Time header present', () => {",
+          "        pm.response.to.have.header('X-Process-Time');",
+          "    });",
+          "}",
+          "pm.test('Response time under 2s', () => {",
+          "    pm.expect(pm.response.responseTime).to.be.below(2000);",
+          "});"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8000" },
+    { "key": "password", "value": "secret123" },
+    { "key": "username", "value": "" },
+    { "key": "user_id", "value": "" },
+    { "key": "access_token", "value": "" },
+    { "key": "todo_id", "value": "" },
+    { "key": "todo_id_2", "value": "" },
+    { "key": "tampered_token", "value": "" },
+    { "key": "username_2", "value": "" },
+    { "key": "access_token_2", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "0. Health",
+      "item": [
+        {
+          "name": "Health check",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('API is up', () => pm.expect(pm.response.json().status).to.eql('ok'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "url": "{{baseUrl}}/api/health"
+          }
+        }
+      ]
+    },
+    {
+      "name": "1. Auth",
+      "item": [
+        {
+          "name": "Register",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// New username every run, so re-running never hits 'already taken'",
+                  "pm.collectionVariables.set('username', 'user_' + Date.now());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Status 201 Created', () => pm.response.to.have.status(201));",
+                  "pm.test('Returns the new user', () => {",
+                  "    pm.expect(body.id).to.be.a('string');",
+                  "    pm.expect(body.username).to.eql(pm.collectionVariables.get('username'));",
+                  "});",
+                  "pm.test('response_model hides hashed_password', () => {",
+                  "    pm.expect(body).to.not.have.property('hashed_password');",
+                  "});",
+                  "pm.collectionVariables.set('user_id', body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{username}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/auth/register",
+            "description": "Creates a user. Pydantic checks: username 3-30 chars (letters, digits, _) and password at least 6 chars."
+          }
+        },
+        {
+          "name": "Register - duplicate username (409)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 409 Conflict', () => pm.response.to.have.status(409));",
+                  "pm.test('Explains why', () => {",
+                  "    pm.expect(pm.response.json().detail).to.eql('Username already taken');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{username}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/auth/register"
+          }
+        },
+        {
+          "name": "Register - invalid data (422)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Pydantic rejects the body before our route code runs",
+                  "const detail = pm.response.json().detail;",
+                  "pm.test('Status 422 Unprocessable', () => pm.response.to.have.status(422));",
+                  "pm.test('One error per invalid field', () => {",
+                  "    const fields = detail.map(e => e.loc[e.loc.length - 1]);",
+                  "    pm.expect(fields).to.include.members(['username', 'password']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"ab\",\n  \"password\": \"1\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/auth/register"
+          }
+        },
+        {
+          "name": "Login - wrong password (401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('Generic message (does not reveal whether the user exists)', () => {",
+                  "    pm.expect(pm.response.json().detail).to.eql('Incorrect username or password');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{username}}\",\n  \"password\": \"wrong-password\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/auth/login"
+          }
+        },
+        {
+          "name": "Login (saves token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Returns a bearer token', () => {",
+                  "    pm.expect(body.token_type).to.eql('bearer');",
+                  "    pm.expect(body.access_token.split('.')).to.have.lengthOf(3); // header.payload.signature",
+                  "});",
+                  "",
+                  "// Decode the JWT payload (middle part, base64url) to see what's inside.",
+                  "// Anyone can READ a JWT - the signature only stops them CHANGING it.",
+                  "const b64 = body.access_token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');",
+                  "const payload = JSON.parse(atob(b64 + '='.repeat((4 - b64.length % 4) % 4)));",
+                  "console.log('JWT payload:', payload);",
+                  "pm.test('Token subject (sub) is our user id', () => {",
+                  "    pm.expect(payload.sub).to.eql(pm.collectionVariables.get('user_id'));",
+                  "});",
+                  "pm.test('Token has an expiry (exp)', () => {",
+                  "    pm.expect(payload.exp).to.be.above(Date.now() / 1000);",
+                  "});",
+                  "pm.test('Token has a unique id (jti) - its row in the tokens table', () => {",
+                  "    pm.expect(payload.jti).to.be.a('string').and.not.empty;",
+                  "});",
+                  "",
+                  "// Every later request uses Bearer {{access_token}} (collection auth)",
+                  "pm.collectionVariables.set('access_token', body.access_token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{username}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/auth/login"
+          }
+        },
+        {
+          "name": "Me (current user)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Token belongs to our user', () => {",
+                  "    pm.expect(pm.response.json().username).to.eql(pm.collectionVariables.get('username'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/auth/me",
+            "description": "No auth set here, so it inherits Bearer {{access_token}} from the collection."
+          }
+        },
+        {
+          "name": "Sessions (tokens stored in DB)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const sessions = pm.response.json();",
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('One active login, marked as current', () => {",
+                  "    pm.expect(sessions).to.have.lengthOf(1);",
+                  "    pm.expect(sessions[0].current).to.be.true;",
+                  "});",
+                  "pm.test('Raw token is NOT stored or returned', () => {",
+                  "    pm.expect(pm.response.text()).to.not.include(pm.collectionVariables.get('access_token'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/auth/sessions",
+            "description": "Lists rows from the tokens table for the current user: one per login."
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Todos (CRUD)",
+      "item": [
+        {
+          "name": "Create todo",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const todo = pm.response.json();",
+                  "pm.test('Status 201 Created', () => pm.response.to.have.status(201));",
+                  "pm.test('Pydantic stripped whitespace from title', () => {",
+                  "    pm.expect(todo.title).to.eql('Learn FastAPI');",
+                  "});",
+                  "pm.test('New todos start not completed', () => pm.expect(todo.completed).to.be.false);",
+                  "pm.test('Owned by the logged-in user', () => {",
+                  "    pm.expect(todo.owner_id).to.eql(pm.collectionVariables.get('user_id'));",
+                  "});",
+                  "pm.collectionVariables.set('todo_id', todo.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"   Learn FastAPI   \",\n  \"description\": \"middleware, CORS, JWT\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/todos"
+          }
+        },
+        {
+          "name": "Create second todo",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201 Created', () => pm.response.to.have.status(201));",
+                  "pm.test('description is optional (null)', () => pm.expect(pm.response.json().description).to.be.null);",
+                  "pm.collectionVariables.set('todo_id_2', pm.response.json().id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Learn React 19\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/todos"
+          }
+        },
+        {
+          "name": "Create todo - blank title (422)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// '   ' is stripped to '' and then fails min_length=1",
+                  "pm.test('Status 422', () => pm.response.to.have.status(422));",
+                  "pm.test('Error points at title', () => {",
+                  "    pm.expect(pm.response.json().detail[0].loc).to.include('title');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"   \"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/todos"
+          }
+        },
+        {
+          "name": "List todos",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const todos = pm.response.json();",
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Only my 2 todos', () => pm.expect(todos).to.have.lengthOf(2));",
+                  "pm.test('Newest first', () => pm.expect(todos[0].title).to.eql('Learn React 19'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/todos"
+          }
+        },
+        {
+          "name": "Get todo by id",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Correct todo', () => {",
+                  "    pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get('todo_id'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/todos/{{todo_id}}"
+          }
+        },
+        {
+          "name": "Mark completed (PATCH)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const todo = pm.response.json();",
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Now completed', () => pm.expect(todo.completed).to.be.true);",
+                  "pm.test('Fields not sent are unchanged (exclude_unset)', () => {",
+                  "    pm.expect(todo.title).to.eql('Learn FastAPI');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"completed\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/todos/{{todo_id}}"
+          }
+        },
+        {
+          "name": "Filter - completed only",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const todos = pm.response.json();",
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Exactly the completed one', () => {",
+                  "    pm.expect(todos).to.have.lengthOf(1);",
+                  "    pm.expect(todos[0].completed).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/todos?completed=true"
+          }
+        },
+        {
+          "name": "Filter - active only",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const todos = pm.response.json();",
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Exactly the active one', () => {",
+                  "    pm.expect(todos).to.have.lengthOf(1);",
+                  "    pm.expect(todos[0].completed).to.be.false;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/todos?completed=false"
+          }
+        },
+        {
+          "name": "Rename todo (PATCH)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const todo = pm.response.json();",
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Title updated', () => pm.expect(todo.title).to.eql('Learn FastAPI deeply'));",
+                  "pm.test('completed kept from earlier PATCH', () => pm.expect(todo.completed).to.be.true);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Learn FastAPI deeply\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/todos/{{todo_id}}"
+          }
+        },
+        {
+          "name": "Delete todo",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 204 No Content', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/todos/{{todo_id}}"
+          }
+        },
+        {
+          "name": "Get deleted todo (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('Message', () => pm.expect(pm.response.json().detail).to.eql('Todo not found'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/todos/{{todo_id}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Security (authorization)",
+      "item": [
+        {
+          "name": "No token (401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('WWW-Authenticate: Bearer header', () => {",
+                  "    pm.expect(pm.response.headers.get('WWW-Authenticate')).to.eql('Bearer');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "url": "{{baseUrl}}/api/todos"
+          }
+        },
+        {
+          "name": "Garbage token (401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('Message', () => pm.expect(pm.response.json().detail).to.eql('Invalid or expired token'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "this.is.not-a-real-jwt", "type": "string" }]
+            },
+            "method": "GET",
+            "url": "{{baseUrl}}/api/todos"
+          }
+        },
+        {
+          "name": "Tampered token (401)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Take our real token and change one character of the signature.",
+                  "// The payload is untouched, but the server must reject it.",
+                  "const [header, payload, sig] = pm.collectionVariables.get('access_token').split('.');",
+                  "const badSig = (sig[0] === 'A' ? 'B' : 'A') + sig.slice(1);",
+                  "pm.collectionVariables.set('tampered_token', [header, payload, badSig].join('.'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 401 (signature check failed)', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{tampered_token}}", "type": "string" }]
+            },
+            "method": "GET",
+            "url": "{{baseUrl}}/api/todos"
+          }
+        },
+        {
+          "name": "Register second user",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('username_2', 'other_' + Date.now());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{username_2}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/auth/register"
+          }
+        },
+        {
+          "name": "Login second user",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('access_token_2', pm.response.json().access_token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{username_2}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/auth/login"
+          }
+        },
+        {
+          "name": "Second user sees an empty list",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('First user\\'s todos are not visible', () => {",
+                  "    pm.expect(pm.response.json()).to.be.an('array').that.is.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{access_token_2}}", "type": "string" }]
+            },
+            "method": "GET",
+            "url": "{{baseUrl}}/api/todos"
+          }
+        },
+        {
+          "name": "Second user reads first user's todo (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 404 instead of 403: don't even reveal that the todo exists",
+                  "pm.test('Status 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{access_token_2}}", "type": "string" }]
+            },
+            "method": "GET",
+            "url": "{{baseUrl}}/api/todos/{{todo_id_2}}"
+          }
+        },
+        {
+          "name": "Second user deletes first user's todo (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{access_token_2}}", "type": "string" }]
+            },
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/todos/{{todo_id_2}}"
+          }
+        },
+        {
+          "name": "First user's todo still exists",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200 - the delete above did nothing', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/todos/{{todo_id_2}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. CORS",
+      "description": "Browsers send an OPTIONS 'preflight' before cross-origin requests that carry JSON or an Authorization header. Postman is not a browser, so it never blocks anything itself; these requests imitate what the browser sends and check what the server answers.",
+      "item": [
+        {
+          "name": "Preflight from allowed origin",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Origin is allowed', () => {",
+                  "    pm.expect(pm.response.headers.get('Access-Control-Allow-Origin')).to.eql('http://localhost:5173');",
+                  "});",
+                  "pm.test('Authorization header is allowed', () => {",
+                  "    pm.expect(pm.response.headers.get('Access-Control-Allow-Headers').toLowerCase()).to.include('authorization');",
+                  "});",
+                  "pm.test('PATCH is an allowed method', () => {",
+                  "    pm.expect(pm.response.headers.get('Access-Control-Allow-Methods')).to.include('PATCH');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "OPTIONS",
+            "header": [
+              { "key": "Origin", "value": "http://localhost:5173" },
+              { "key": "Access-Control-Request-Method", "value": "POST" },
+              { "key": "Access-Control-Request-Headers", "value": "authorization,content-type" }
+            ],
+            "url": "{{baseUrl}}/api/todos"
+          }
+        },
+        {
+          "name": "Preflight from blocked origin (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('No Access-Control-Allow-Origin, so a browser would block it', () => {",
+                  "    pm.response.to.not.have.header('Access-Control-Allow-Origin');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "OPTIONS",
+            "header": [
+              { "key": "Origin", "value": "http://evil.example.com" },
+              { "key": "Access-Control-Request-Method", "value": "POST" }
+            ],
+            "url": "{{baseUrl}}/api/todos"
+          }
+        },
+        {
+          "name": "Real request exposes custom headers",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Allow-Origin echoes our origin', () => {",
+                  "    pm.expect(pm.response.headers.get('Access-Control-Allow-Origin')).to.eql('http://localhost:5173');",
+                  "});",
+                  "pm.test('expose_headers lets JS read X-Request-ID and X-Process-Time', () => {",
+                  "    const exposed = pm.response.headers.get('Access-Control-Expose-Headers');",
+                  "    pm.expect(exposed).to.include('X-Request-ID');",
+                  "    pm.expect(exposed).to.include('X-Process-Time');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Origin", "value": "http://localhost:5173" }],
+            "url": "{{baseUrl}}/api/todos"
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Logout (token revocation)",
+      "description": "Runs last because it revokes access_token. The JWT itself is still correctly signed and not expired - it is rejected only because its row in the tokens table now has revoked_at set.",
+      "item": [
+        {
+          "name": "Logout",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 204 No Content', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/auth/logout"
+          }
+        },
+        {
+          "name": "Me with revoked token (401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('Rejected because it was revoked', () => {",
+                  "    pm.expect(pm.response.json().detail).to.eql('Token has been revoked');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/auth/me"
+          }
+        },
+        {
+          "name": "Other user's token still works",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Revocation is per token: logging out one session doesn't affect others",
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Still the second user', () => {",
+                  "    pm.expect(pm.response.json().username).to.eql(pm.collectionVariables.get('username_2'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{access_token_2}}", "type": "string" }]
+            },
+            "method": "GET",
+            "url": "{{baseUrl}}/api/auth/me"
+          }
+        }
+      ]
+    }
+  ]
+}

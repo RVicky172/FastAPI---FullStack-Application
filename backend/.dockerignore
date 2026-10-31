@@ -1,0 +1,7 @@
+# Keep the build context small and never bake secrets into the image
+.venv/
+__pycache__/
+*.pyc
+.env
+Dockerfile
+.dockerignore
