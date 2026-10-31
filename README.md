@@ -4,16 +4,19 @@ A small full-stack app for learning the basic workflow:
 
 - **Backend:** FastAPI + Pydantic, SQLAlchemy 2.0 + PostgreSQL, JWT auth with tokens stored in the DB (so logout really revokes them), CORS, custom middleware
 - **Frontend:** React 19 (Vite) + axios with request/response interceptors
-- **Infra:** Docker Compose runs Postgres, the backend and the frontend
+- **Infra:** Docker Compose runs Postgres, pgAdmin, the backend and the frontend, with live reload while you code
 
 ```text
 fast-api/
-├── docker-compose.yml       # db (Postgres) + pgadmin + backend + frontend
-├── pgadmin/                 # pgAdmin pre-config: servers.json + pgpass
+├── .env.example             # template for .env (all settings, NO passwords)
+├── docker-compose.yml       # development: db + pgadmin + backend + frontend, live reload
+├── docker-compose.prod.yml  # production-like overrides (nginx build, no reload)
+├── docs/docker.md           # full Docker guide
+├── postman/                 # API test collection + environment
 ├── backend/
 │   ├── app/
 │   │   ├── main.py          # app setup: lifespan (create tables), middleware, CORS, routers
-│   │   ├── config.py        # settings from .env (DATABASE_URL, SECRET_KEY, origins)
+│   │   ├── config.py        # settings from env variables (no default secrets)
 │   │   ├── database.py      # SQLAlchemy engine, session, get_db dependency
 │   │   ├── models.py        # SQLAlchemy models = DB tables (users, todos, tokens)
 │   │   ├── schemas.py       # Pydantic models = API request/response shapes
@@ -23,14 +26,10 @@ fast-api/
 │   │       ├── auth.py      # /api/auth/register, /login, /logout, /me, /sessions
 │   │       └── todos.py     # /api/todos CRUD (protected)
 │   ├── pyproject.toml       # uv project: dependencies + metadata
-│   ├── uv.lock              # exact pinned versions (commit this)
-│   ├── .python-version      # Python version uv uses
-│   ├── .env.example         # copy to .env (secret key, DATABASE_URL...)
+│   ├── uv.lock              # exact pinned versions
 │   └── Dockerfile
-├── postman/                 # API test collection + environment
 └── frontend/
-    ├── .env.example         # copy to .env (API URL)
-    ├── Dockerfile           # multi-stage: node build -> nginx
+    ├── Dockerfile           # targets: dev (Vite) and prod (nginx)
     ├── nginx.conf
     └── src/
         ├── api/axiosClient.js      # axios instance + interceptors (JWT)
@@ -41,78 +40,53 @@ fast-api/
         └── App.jsx
 ```
 
-## Run it
+## Quick start (Docker)
 
-You can run everything in Docker, or only Postgres in Docker and the backend and frontend locally. The local option is better while you're editing code, because of hot reload.
-
-### Option A: everything in Docker
+You need Docker Desktop running. **Full guide: [docs/docker.md](docs/docker.md)**, covering setup, every env variable, start, stop, restart, live reload and troubleshooting.
 
 ```powershell
-Copy-Item backend\.env.example backend\.env   # only once, then set SECRET_KEY
-docker compose up --build
+Copy-Item .env.example .env          # 1. create your env file
+#                                      2. fill in POSTGRES_PASSWORD, SECRET_KEY, PGADMIN_PASSWORD
+#                                         generate each with: python -c "import secrets; print(secrets.token_hex(32))"
+docker compose up --build --watch    # 3. start everything with live reload
 ```
 
-- Frontend: <http://localhost:5173>
-- Backend: <http://localhost:8000> (docs at <http://localhost:8000/docs>)
-- Postgres: `localhost:5432`, user / password / database `todo` / `todo` / `todo`
-- pgAdmin (database UI): <http://localhost:5050>
-
-### Option B: Postgres in Docker, code locally
-
-The backend uses [uv](https://docs.astral.sh/uv/) for Python and dependency management.
-
-**Terminal 1: database**
-
-```powershell
-docker compose up -d db pgadmin   # Postgres + the pgAdmin UI
-```
-
-**Terminal 2: backend** (<http://localhost:8000>)
-
-```powershell
-cd backend
-Copy-Item .env.example .env    # only once, then put a real SECRET_KEY in .env
-uv sync                        # only once: creates .venv and installs from uv.lock
-uv run fastapi dev app/main.py
-```
-
-Tables are created automatically on startup. `uv run` uses the project's `.venv`, so there's no `activate` step.
-
-**Terminal 3: frontend** (<http://localhost:5173>)
-
-```powershell
-cd frontend
-Copy-Item .env.example .env    # only once
-npm install                    # only once
-npm run dev
-```
-
-If port 8000 or 5432 is already taken (for example by Option A's containers, or a Postgres installed on Windows), stop that first: `docker compose down`.
-
-### Handy uv commands
-
-| Command | What it does |
+| Open | What |
 |---|---|
-| `uv add <pkg>` | Install a package and add it to `pyproject.toml` + `uv.lock` |
-| `uv remove <pkg>` | Uninstall and remove it from the project |
-| `uv sync` | Make `.venv` match `uv.lock` exactly |
-| `uv run <cmd>` | Run a command inside the project environment |
-| `uv tree` | Show the dependency tree |
+| <http://localhost:5173> | The app |
+| <http://localhost:8000/docs> | Interactive API docs |
+| <http://localhost:5050> | pgAdmin. Log in with `PGADMIN_EMAIL` / `PGADMIN_PASSWORD` from `.env` |
 
-## Environment variables
+**While it runs, just edit code.** Saved `.py` files reload the backend in about a second. React changes appear in the browser instantly. Installing a package rebuilds the container automatically. There are no manual restarts.
 
-Settings are read in [config.py](backend/app/config.py). `python-dotenv` loads `backend/.env`, and real environment variables override it.
+Stop with **Ctrl+C**, or `docker compose down`. Your data is kept in a Docker volume.
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `SECRET_KEY` | dev-only key | Signs JWTs. Use 32+ random bytes in real deployments |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | `30` | Token lifetime |
-| `ALLOWED_ORIGINS` | `http://localhost:5173,...` | CORS allow-list, comma-separated |
-| `DATABASE_URL` | `postgresql+psycopg://todo:todo@localhost:5432/todo` | Where the database is |
-| `SQL_ECHO` | `false` | `true` prints every SQL query SQLAlchemy runs |
-| `VITE_API_URL` (frontend) | `http://localhost:8000/api` | Where axios sends requests |
+## Environment variables and secrets
 
-`.env` files are git-ignored. Only the `.env.example` files are meant to be committed.
+- **One file, `.env` in the project root,** configures everything: Docker Compose, the backend, the frontend and pgAdmin. It's git-ignored.
+- **`.env.example`** is the committed template. It holds variable names and harmless defaults, and leaves every password empty.
+- **No password exists in any committed file.** Compose stops with a clear error if a required value is missing (`${VAR:?...}`). The backend has no fallback secrets either. pgAdmin's connection settings and password file are generated inside the container at startup from `.env`.
+- **Only `VITE_*` variables reach the browser,** so never put secrets in them.
+
+The full table of variables and how to change them safely is in [docs/docker.md](docs/docker.md#3-set-up-environment-variables).
+
+## Run without Docker for the app code (optional)
+
+You can run only Postgres in Docker and the backend and frontend directly on your machine. They read the same root `.env`.
+
+```powershell
+docker compose up -d db pgadmin           # database + UI
+
+cd backend
+uv sync                                   # first time: creates .venv
+uv run fastapi dev app/main.py            # http://localhost:8000
+
+cd ../frontend
+npm install                               # first time
+npm run dev                               # http://localhost:5173
+```
+
+The backend uses [uv](https://docs.astral.sh/uv/). `uv add <pkg>` installs a package and records it in `pyproject.toml` + `uv.lock`, and `uv run <cmd>` runs inside the project's `.venv` without activating it.
 
 ## Database (PostgreSQL)
 
@@ -180,114 +154,18 @@ flowchart LR
 
 Only the `jti` is stored, never the token string itself. If the table leaked, the rows couldn't be used to log in, the same reason passwords are stored as hashes.
 
-### Look inside the database with pgAdmin
+### Browse the data with pgAdmin
 
-[pgAdmin 4](https://www.pgadmin.org/) is the standard web UI for PostgreSQL. It runs as the `pgadmin` service.
+Open <http://localhost:5050> and log in with `PGADMIN_EMAIL` / `PGADMIN_PASSWORD` from your `.env`. Then:
 
-1. Open <http://localhost:5050>. There's no login page.
-2. In the left sidebar, expand **Servers → Todo DB (docker) → Databases → todo → Schemas → public → Tables**. It connects without asking for a password.
-3. Right-click a table → **View/Edit Data → All Rows** to see its rows. Try `tokens` before and after you log out in the app: `revoked_at` gets filled in.
-4. **Tools → Query Tool** opens a SQL editor.
-5. Right-click the **todo** database → **ERD For Database** draws the table relationships.
+1. Expand **Servers → Todo DB (docker) → Databases → todo → Schemas → public → Tables**. It connects without asking for the database password.
+2. Right-click a table → **View/Edit Data → All Rows** to see its rows. Try `tokens` before and after logging out in the app.
+3. **Tools → Query Tool** opens a SQL editor.
+4. Right-click the database → **ERD For Database** draws the table relationships.
 
-How it's wired up ([pgadmin/](pgadmin/)):
+Other tools (DBeaver, DataGrip, TablePlus, the VS Code PostgreSQL extension) can connect to `localhost:5432` with the user, password and database from your `.env`.
 
-| File | Purpose |
-|---|---|
-| `servers.json` | Registers the "Todo DB (docker)" server on first start. Host is `db`, because pgAdmin runs inside the Docker network |
-| `pgpass` | Saved password, so there's no prompt. The container copies it and makes it private, because the database client ignores password files that other users can read |
-
-pgAdmin runs in **desktop mode** (`PGADMIN_CONFIG_SERVER_MODE: "False"`): one user and no login. That's convenient locally, but never expose port 5050 to a network.
-
-`servers.json` is only imported the **first** time pgAdmin starts. If you change it, reset pgAdmin's settings volume:
-
-```powershell
-docker compose rm -sf pgadmin; docker volume rm fast-api_pgadmin-data; docker compose up -d pgadmin
-```
-
-**Other tools** work too, because Postgres is published on `localhost:5432` (user `todo`, password `todo`, database `todo`). For example: DBeaver, DataGrip, TablePlus, Beekeeper Studio, or the VS Code "PostgreSQL" extension. Use host `localhost` from your machine; `db` only works inside Docker.
-
-### Look inside the database from the terminal
-
-```powershell
-docker exec -it todo-db psql -U todo -d todo
-```
-
-```sql
-\dt                                   -- list tables
-SELECT username, created_at FROM users;
-SELECT title, completed FROM todos;
-SELECT jti, revoked_at, user_agent FROM tokens;
-\q                                    -- quit
-```
-
-Tables are created by `Base.metadata.create_all()` at startup. That only creates **missing** tables; it never changes an existing one. If you change a model, the simplest fix while learning is to reset the data with `docker compose down -v`. Real projects use **Alembic** migrations for this.
-
-## Docker
-
-### What runs where
-
-```mermaid
-flowchart LR
-    subgraph host["Your computer"]
-        browser["🌐 Browser"]
-    end
-
-    subgraph docker["Docker (docker compose)"]
-        subgraph fe["frontend container"]
-            nginx["nginx<br/>serves React build"]
-        end
-        subgraph be["backend container"]
-            api["FastAPI<br/>fastapi run :8000"]
-        end
-        subgraph dbc["db container"]
-            pg[("PostgreSQL 18<br/>:5432")]
-        end
-        subgraph pga["pgadmin container"]
-            admin["pgAdmin 4"]
-        end
-        vol[("pgdata volume")]
-    end
-
-    browser -- "1 load page<br/>localhost:5173" --> nginx
-    browser -- "2 API calls + JWT<br/>localhost:8000/api" --> api
-    api -- "3 SQL<br/>host: db" --> pg
-    browser -. "4 database UI<br/>localhost:5050" .-> admin
-    admin -. "SQL, host: db" .-> pg
-    pg --- vol
-```
-
-1. The browser downloads the React files from nginx once.
-2. After that, React runs **in the browser** and calls the API directly. That's why `VITE_API_URL` is `localhost:8000` and not the Docker name `backend`, and why CORS still applies (port 5173 and port 8000 are different origins).
-3. The backend talks to Postgres **inside** Docker's network, where the database's hostname is its service name, `db`. So `docker-compose.yml` overrides `DATABASE_URL` to use `@db:5432`, while your local `.env` uses `@localhost:5432`.
-4. pgAdmin is a separate web app for **you**, not part of the app's request flow. It also reaches Postgres as `db`.
-
-Startup order is enforced with health checks: `db` (`pg_isready`), then `backend` (`/api/health`), then `frontend`.
-
-### How the images are built
-
-| | Backend ([Dockerfile](backend/Dockerfile)) | Frontend ([Dockerfile](frontend/Dockerfile)) |
-|---|---|---|
-| Base | `python:3.14-slim` + uv binary | `node:24-alpine` to build, `nginx:1.29-alpine` to serve |
-| Dependencies | `uv sync --locked` from `uv.lock` | `npm ci` from `package-lock.json` |
-| Config | `.env` passed in at **runtime** via `env_file` | `VITE_API_URL` baked in at **build time** via `args` |
-| Extras | non-root user, `HEALTHCHECK` on `/api/health` | multi-stage build, so the final image has no Node |
-
-The database uses the official `postgres:18-alpine` image, with its data in the `pgdata` named volume.
-
-Dependencies are copied and installed **before** the app code, so Docker caches that layer. Editing code then rebuilds in seconds instead of reinstalling everything.
-
-### Useful Docker commands
-
-| Command | What it does |
-|---|---|
-| `docker compose up --build` | Build images and start everything (add `-d` to run in the background) |
-| `docker compose up -d db` | Start only Postgres |
-| `docker compose up -d db pgadmin` | Start Postgres + pgAdmin |
-| `docker compose logs -f backend` | Follow the backend logs (middleware timing lines show up here) |
-| `docker compose ps` | Show container status, including health |
-| `docker compose down` | Stop and remove containers. The data volume is kept |
-| `docker compose down -v` | Also delete the `pgdata` volume, which **wipes the database** |
+Tables are created by `Base.metadata.create_all()` at startup. It only creates **missing** tables and never alters existing ones. After changing a model, reset the data with `docker compose down -v` (⚠️ deletes data), or use **Alembic** migrations in a real project.
 
 ## Test the API with Postman
 
@@ -302,17 +180,11 @@ The [postman/](postman/) folder has a collection that tests the whole flow in or
 | 4. CORS | Preflight from `localhost:5173` is allowed, one from another origin is rejected, and `expose_headers` is present |
 | 5. Logout | Logout (204), then the same token gets 401 "revoked", while the other user's token still works |
 
-A collection-level test also checks that every response carries the `X-Request-ID` and `X-Process-Time` middleware headers.
+Every response is also checked for the `X-Request-ID` and `X-Process-Time` middleware headers. Each run registers new users with **random** passwords, so the collection contains no passwords and can be re-run any number of times.
 
-**In Postman:**
+**In Postman:** import both files from `postman/`, select the **Todo API - Local** environment, start the app, then **Run collection**. Run it as a whole, because each request saves values (token, IDs) that later ones use.
 
-1. **Import** both files from `postman/` (the collection and the "Todo API - Local" environment).
-2. Pick the **Todo API - Local** environment (top right).
-3. Start the backend, then **Run collection**. Run it as a whole: each request saves values (token, todo IDs) that later requests use.
-
-You can also send requests one by one. Run **Login** first; it saves `access_token`, and every other request inherits `Bearer {{access_token}}` from the collection's Authorization tab. Each run registers a new random user, so it can be repeated.
-
-**From the terminal** with Newman (Postman's command-line runner):
+**From the terminal:**
 
 ```powershell
 npx newman run postman/Todo-API.postman_collection.json -e postman/Todo-API-local.postman_environment.json
@@ -391,7 +263,7 @@ React updates state -> UI re-renders
 | Pydantic validation | `schemas.py` | Register with a 2-char username and look at the 422 |
 | response_model filtering | `routers/auth.py` | `hashed_password` is in the `users` table but never in responses |
 | Dependency injection | `security.py` → `get_current_user` | Call `/api/todos` in /docs without "Authorize" |
-| DB session per request | `database.py` → `get_db` | Set `SQL_ECHO=true` and watch the SQL for each request |
+| DB session per request | `database.py` → `get_db` | Set `SQL_ECHO=true` in `.env`, run `docker compose up -d`, watch the SQL in `docker compose logs -f backend` |
 | ORM queries | `routers/todos.py` | Compare the `select(...)` code with the SQL printed by `SQL_ECHO` |
 | JWT | `security.py` | Paste a token into jwt.io to see `sub`, `jti` and `exp` |
 | Token revocation | `security.py` + `tokens` table | Copy your token, log out, then call `/api/auth/me` with it in /docs |
@@ -401,6 +273,7 @@ React updates state -> UI re-renders
 | CORS expose_headers | `main.py` + `axiosClient.js` | Remove `expose_headers`; the console log shows `undefined` |
 | Request interceptor | `axiosClient.js` | Token is attached automatically to every call |
 | Response interceptor | `axiosClient.js` | Edit the token in localStorage, refresh, and you are logged out |
+| Live reload | `docker-compose.yml` → `develop.watch` | Change a message in `routers/todos.py` and call the endpoint again |
 
 ## API
 

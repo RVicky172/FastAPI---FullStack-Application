@@ -1,0 +1,31 @@
+# =============================================================================
+# PRODUCTION-LIKE overrides, layered on top of docker-compose.yml:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
+#
+# Differences from development:
+#   - backend runs `fastapi run` (no auto-reload)
+#   - frontend is a static build served by nginx (no Vite, no Node)
+#   - no `watch` (just don't pass --watch)
+#
+# `!override` replaces the value from docker-compose.yml instead of merging
+# with it (lists like `ports` are otherwise combined).
+# =============================================================================
+services:
+  backend:
+    command: ["fastapi", "run", "app/main.py", "--host", "0.0.0.0", "--port", "8000"]
+
+  frontend:
+    build:
+      context: ./frontend
+      target: prod
+      args:
+        # Baked into the JS bundle at build time
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000/api}
+    ports: !override
+      - "5173:80"            # same URL for you: http://localhost:5173
+    healthcheck: !override
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:80/"]
+      interval: 10s
+      timeout: 3s
+      retries: 3

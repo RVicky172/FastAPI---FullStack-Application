@@ -1,6 +1,8 @@
 # ---------------------------------------------------------------------------
 # Backend image: Python 3.14 + uv + FastAPI
-# Build:  docker build -t todo-backend ./backend
+#
+# The default CMD is production mode (`fastapi run`). docker-compose.yml
+# overrides it with `fastapi dev` (auto-reload) for development.
 # ---------------------------------------------------------------------------
 FROM python:3.14-slim
 
@@ -17,18 +19,19 @@ ENV UV_COMPILE_BYTECODE=1 \
     UV_PYTHON_DOWNLOADS=never \
     PYTHONUNBUFFERED=1
 
+# Non-root user (good security practice)
+RUN useradd --create-home appuser
+
 # 1) Install dependencies FIRST, using only the lock files.
 #    Docker caches this layer, so editing app code doesn't reinstall packages.
 COPY pyproject.toml uv.lock .python-version ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --no-install-project
 
-# 2) Then copy the application code
-COPY app ./app
+# 2) Then copy the application code.
+#    Owned by appuser so `docker compose watch` can sync edited files in.
+COPY --chown=appuser:appuser app ./app
 
-# Run as a non-root user (good security practice).
-# Data lives in Postgres, so the app needs no writable folders.
-RUN useradd --create-home appuser
 USER appuser
 
 # Put the venv's executables (fastapi, uvicorn...) on PATH
@@ -37,8 +40,8 @@ ENV PATH="/app/.venv/bin:$PATH"
 EXPOSE 8000
 
 # Docker marks the container "healthy" once /api/health answers
-HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" || exit 1
 
-# `fastapi run` = production mode (no auto-reload), unlike `fastapi dev`
+# Production mode: no auto-reload
 CMD ["fastapi", "run", "app/main.py", "--host", "0.0.0.0", "--port", "8000"]

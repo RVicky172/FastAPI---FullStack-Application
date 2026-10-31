@@ -1,35 +1,57 @@
 """
 App settings in one place.
 
-Values come from environment variables. For local development, copy
-`.env.example` to `.env` - load_dotenv() reads it into the environment.
-Real environment variables always win over the .env file.
+All values come from environment variables:
+  - In Docker, docker-compose.yml passes them in from the project's .env file.
+  - When running locally (`uv run fastapi dev`), load_dotenv() reads the same
+    project-root .env file. Real environment variables always win.
+
+There are deliberately NO default passwords or secret keys here: if one is
+missing, the app stops at startup with a clear message instead of silently
+running with a known, public value.
 """
 import os
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(BASE_DIR / ".env")
+BASE_DIR = Path(__file__).resolve().parent.parent  # backend/
+load_dotenv(BASE_DIR.parent / ".env")              # project-root .env (local runs)
 
-# SQLAlchemy connection string:  dialect+driver://user:password@host:port/dbname
-# Default = the Postgres container from docker-compose, reached from your machine.
-DATABASE_URL = os.getenv(
-    "DATABASE_URL", "postgresql+psycopg://todo:todo@localhost:5432/todo"
+
+def _required(name: str) -> str:
+    value = os.getenv(name, "").strip()
+    if not value:
+        raise RuntimeError(
+            f"Environment variable {name} is not set. "
+            "Copy .env.example to .env in the project root and fill it in."
+        )
+    return value
+
+
+# ---------- Database ----------
+# Built from the same POSTGRES_* variables the Postgres container uses.
+# POSTGRES_HOST is "localhost" for local runs and "db" (the service name)
+# inside Docker - docker-compose.yml sets that. DATABASE_URL overrides it all.
+DATABASE_URL = os.getenv("DATABASE_URL") or (
+    "postgresql+psycopg://"
+    f"{_required('POSTGRES_USER')}:{_required('POSTGRES_PASSWORD')}"
+    f"@{os.getenv('POSTGRES_HOST', 'localhost')}:{os.getenv('POSTGRES_PORT', '5432')}"
+    f"/{_required('POSTGRES_DB')}"
 )
 # Set SQL_ECHO=true to print every SQL query SQLAlchemy runs (great for learning)
 SQL_ECHO = os.getenv("SQL_ECHO", "false").lower() == "true"
 
-# JWT settings. NEVER commit a real secret - set SECRET_KEY in .env.
+# ---------- JWT ----------
 # HS256 wants a key of at least 32 bytes. Generate one with:
 #   python -c "import secrets; print(secrets.token_hex(32))"
-SECRET_KEY = os.getenv("SECRET_KEY", "dev-only-secret-key-change-me-in-production-0123456789")
+SECRET_KEY = _required("SECRET_KEY")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 
-# Which frontends are allowed to call this API from the browser (CORS).
-# Comma-separated in .env. Vite's dev server runs on port 5173 by default.
+# ---------- CORS ----------
+# Which frontends are allowed to call this API from the browser.
+# Comma-separated. Vite's dev server runs on port 5173 by default.
 ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.getenv(

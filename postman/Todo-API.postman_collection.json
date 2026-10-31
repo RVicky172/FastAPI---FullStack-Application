@@ -35,7 +35,8 @@
   ],
   "variable": [
     { "key": "baseUrl", "value": "http://localhost:8000" },
-    { "key": "password", "value": "secret123" },
+    { "key": "password", "value": "" },
+    { "key": "wrong_password", "value": "" },
     { "key": "username", "value": "" },
     { "key": "user_id", "value": "" },
     { "key": "access_token", "value": "" },
@@ -83,7 +84,11 @@
                 "type": "text/javascript",
                 "exec": [
                   "// New username every run, so re-running never hits 'already taken'",
-                  "pm.collectionVariables.set('username', 'user_' + Date.now());"
+                  "pm.collectionVariables.set('username', 'user_' + Date.now());",
+                  "// Random throwaway passwords, so no password is stored in this file",
+                  "const rand = () => Math.random().toString(36).slice(2);",
+                  "pm.collectionVariables.set('password', 'pw_' + rand() + rand());",
+                  "pm.collectionVariables.set('wrong_password', 'nope_' + rand());"
                 ]
               }
             },
@@ -200,7 +205,7 @@
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"username\": \"{{username}}\",\n  \"password\": \"wrong-password\"\n}",
+              "raw": "{\n  \"username\": \"{{username}}\",\n  \"password\": \"{{wrong_password}}\"\n}",
               "options": { "raw": { "language": "json" } }
             },
             "url": "{{baseUrl}}/api/auth/login"

@@ -5,5 +5,11 @@ import react from "@vitejs/plugin-react";
 // so you can see CORS in action (check the OPTIONS preflight in DevTools).
 export default defineConfig({
   plugins: [react()],
-  server: { port: 5173 },
+  // Read .env from the project root (one .env for the whole project).
+  // Only VITE_* variables are exposed to the browser code.
+  envDir: "..",
+  server: {
+    port: 5173,
+    strictPort: true, // fail instead of silently moving to another port
+  },
 });

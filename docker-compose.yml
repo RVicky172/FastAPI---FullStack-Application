@@ -1,28 +1,33 @@
-# ---------------------------------------------------------------------------
-# Run the whole app with one command:
-#   docker compose up --build
+# =============================================================================
+# DEVELOPMENT setup (hot reload). Full guide: docs/docker.md
 #
-#   Frontend -> http://localhost:5173   (nginx serving the React build)
-#   Backend  -> http://localhost:8000   (FastAPI, docs at /docs)
-#   Postgres -> localhost:5432          (user/password/db: todo/todo/todo)
-#   pgAdmin  -> http://localhost:5050   (database UI, already connected)
+#   docker compose up --build --watch     start everything + sync code changes
+#   docker compose down                   stop (data is kept)
 #
-# Only the database (for running the backend locally with `uv run`):
-#   docker compose up -d db
+#   Frontend -> http://localhost:5173   (Vite dev server, hot module reload)
+#   Backend  -> http://localhost:8000   (fastapi dev, auto-reload; docs at /docs)
+#   pgAdmin  -> http://localhost:5050   (database UI)
+#   Postgres -> localhost:5432
 #
-# Postgres credentials can be overridden in a .env file NEXT TO this file:
-#   POSTGRES_USER=...  POSTGRES_PASSWORD=...  POSTGRES_DB=...
-# ---------------------------------------------------------------------------
+# Every credential comes from the project-root .env file (git-ignored).
+# `${VAR:?message}` makes Compose stop with that message if VAR is missing,
+# so the app never starts with a default/known password.
+#
+# Production-like run (nginx build, no reload): see docker-compose.prod.yml
+# =============================================================================
+name: fast-api
+
 services:
+  # ---------------------------------------------------------------------------
   db:
     image: postgres:18-alpine
     container_name: todo-db
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-todo}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-todo}
-      POSTGRES_DB: ${POSTGRES_DB:-todo}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
     ports:
-      - "5432:5432"          # so tools on your machine (backend, psql, DBeaver) can connect
+      - "5432:5432"          # so tools on your machine can connect
     volumes:
       # Named volume: data survives `docker compose down` and rebuilds.
       # (Postgres 18+ images keep their data under /var/lib/postgresql)
@@ -35,64 +40,121 @@ services:
       retries: 10
     restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
   backend:
     build: ./backend
     container_name: todo-backend
+    # `fastapi dev` = auto-reload: restarts the server when a .py file changes
+    command: ["fastapi", "dev", "app/main.py", "--host", "0.0.0.0", "--port", "8000"]
     ports:
-      - "8000:8000"          # host:container
-    env_file:
-      - path: ./backend/.env # SECRET_KEY, ALLOWED_ORIGINS, ...
-        required: false      # falls back to defaults in config.py if missing
+      - "8000:8000"
     environment:
-      # Overrides DATABASE_URL from backend/.env: inside Docker the database
-      # host is the SERVICE NAME "db", not localhost.
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-todo}:${POSTGRES_PASSWORD:-todo}@db:5432/${POSTGRES_DB:-todo}
+      POSTGRES_HOST: db      # inside Docker, the database host is the SERVICE NAME
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      SQL_ECHO: ${SQL_ECHO:-false}
     depends_on:
       db:
         condition: service_healthy  # don't start until Postgres is ready
     restart: unless-stopped
+    # `docker compose watch` / `up --watch` rules:
+    develop:
+      watch:
+        # Edited .py files are copied into the running container,
+        # then `fastapi dev` notices and reloads (about 1 second).
+        - action: sync
+          path: ./backend/app
+          target: /app/app
+        # New/changed dependencies -> rebuild the image automatically
+        - action: rebuild
+          path: ./backend/pyproject.toml
+        - action: rebuild
+          path: ./backend/uv.lock
 
-  # pgAdmin 4: web UI to browse tables, run SQL and see ER diagrams
-  #   http://localhost:5050   (no login - runs in "desktop mode")
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      target: dev            # Vite dev server (see frontend/Dockerfile)
+    container_name: todo-frontend
+    ports:
+      - "5173:5173"
+    environment:
+      # The BROWSER calls this URL, so it is localhost, not "backend"
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:8000/api}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:5173/"]
+      interval: 10s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    develop:
+      watch:
+        # Edited files are copied in; Vite's hot module reload updates the
+        # browser instantly (no page refresh for most React changes).
+        - action: sync
+          path: ./frontend
+          target: /app
+          ignore:
+            - node_modules/
+            - dist/
+        - action: rebuild
+          path: ./frontend/package.json
+        - action: rebuild
+          path: ./frontend/package-lock.json
+
+  # ---------------------------------------------------------------------------
+  # pgAdmin 4: web UI to browse tables, run SQL and draw ER diagrams.
+  # Log in with PGADMIN_EMAIL / PGADMIN_PASSWORD from .env.
   pgadmin:
     image: dpage/pgadmin4:9
     container_name: todo-pgadmin
     ports:
       - "5050:80"
     environment:
-      # Desktop mode = single user, no pgAdmin login page. Fine for local dev,
-      # NEVER expose this to a network.
-      PGADMIN_CONFIG_SERVER_MODE: "False"
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:?Set PGADMIN_EMAIL in .env}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:?Set PGADMIN_PASSWORD in .env}
       PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
-      PGADMIN_DEFAULT_EMAIL: admin@example.com  # required by the image even in desktop mode
-      PGADMIN_DEFAULT_PASSWORD: admin
-      # libpq reads DB passwords from this file, so connecting needs no prompt
-      PGPASSFILE: /tmp/pgpass
+      PGADMIN_SERVER_JSON_FILE: /tmp/servers.json
+      # Only used by the startup script below to write the two files:
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
+    # Write the server list + password file from the variables above, then
+    # start pgAdmin normally. Nothing with a password is stored in the repo.
+    #   - pgAdmin looks for PassFile inside the user's storage folder:
+    #     /var/lib/pgadmin/storage/<email with @ replaced by _>/
+    #   - chmod 600: the Postgres client ignores password files others can read
+    # ($$ = a literal $ for the shell, so Compose doesn't substitute it)
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        STORAGE="/var/lib/pgadmin/storage/$${PGADMIN_DEFAULT_EMAIL//@/_}"
+        mkdir -p "$$STORAGE"
+        printf '%s\n' "db:5432:*:$${POSTGRES_USER}:$${POSTGRES_PASSWORD}" > "$$STORAGE/pgpass"
+        chmod 600 "$$STORAGE/pgpass"
+        printf '{"Servers":{"1":{"Name":"Todo DB (docker)","Group":"Servers","Host":"db","Port":5432,"MaintenanceDB":"%s","Username":"%s","SSLMode":"prefer","PassFile":"/pgpass"}}}' "$${POSTGRES_DB}" "$${POSTGRES_USER}" > /tmp/servers.json
+        exec /entrypoint.sh
     volumes:
-      - ./pgadmin/servers.json:/pgadmin4/servers.json:ro  # pre-registers "Todo DB"
-      - ./pgadmin/pgpass:/pgpass:ro
-      - pgadmin-data:/var/lib/pgadmin                     # keeps pgAdmin settings
-    # libpq ignores a password file readable by others, and files mounted from
-    # Windows can't be chmod-ed - so copy it, lock it down, then start pgAdmin.
-    entrypoint: ["/bin/sh", "-c", "cp /pgpass /tmp/pgpass && chmod 600 /tmp/pgpass && exec /entrypoint.sh"]
+      - pgadmin-data:/var/lib/pgadmin   # keeps pgAdmin settings and login
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:80/misc/ping"]
+      interval: 10s
+      timeout: 3s
+      start_period: 30s
+      retries: 5
     depends_on:
       db:
         condition: service_healthy
-    restart: unless-stopped
-
-  frontend:
-    build:
-      context: ./frontend
-      args:
-        VITE_API_URL: http://localhost:8000/api
-    container_name: todo-frontend
-    ports:
-      # Host port 5173 so the browser origin is still http://localhost:5173,
-      # which is already in the backend's CORS ALLOWED_ORIGINS.
-      - "5173:80"
-    depends_on:
-      backend:
-        condition: service_healthy  # wait for the backend HEALTHCHECK
     restart: unless-stopped
 
 volumes:
